@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from dateparser import parse as parse_datetime
 import argparse
 import sys
+import os
 
 # iBooking studio IDs
 STUDIOS = {
@@ -104,7 +105,8 @@ if __name__ == "__main__":
     training_start = (datetime.now() + timedelta(days=args.days)).replace(
         hour=int(args.time[:2]), minute=int(args.time[2:]), second=0, microsecond=0
     )
-
+    if args.password == "ENV":
+        args.password = os.environ["password"]
     success = False
     current_try = 1
     while current_try <= args.max_tries:
