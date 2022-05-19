@@ -1,4 +1,6 @@
+#!/bin/python
 from requests_html import HTMLSession
+from requests import HTTPError
 from urllib.parse import parse_qs, urlparse
 from time import sleep
 from datetime import datetime, timedelta
@@ -6,6 +8,7 @@ from dateparser import parse as parse_datetime
 import argparse
 import sys
 import os
+import itertools
 
 # iBooking studio IDs
 STUDIOS = {
@@ -17,7 +20,7 @@ STUDIOS = {
 }
 
 # iBooking activity IDs
-ACTIVITIES = {"egentrening": 419380}
+ACTIVITIES = {"egentrening": 419380, "hall4": 75606, "hallAdragvoll": 516131}
 
 
 def log_in(session: HTMLSession, username: str, password: str) -> None:
@@ -41,6 +44,50 @@ def get_schedule(session: HTMLSession, studio: int, token: str) -> dict:
     )
     response.raise_for_status()
     return response.json()
+
+def get_resource_schedule(session: HTMLSession, studio: int, token: str) -> dict:
+    response = session.get(
+        "https://ibooking.sit.no/webapp/api/ResourceBooking/getSchedule",
+        params={"sid": studio, "token": token, "resourceIds": 324},  # Without the resourceIds the "bookingOpensAt" is wrong...
+    )
+    response.raise_for_status()
+    return response.json()
+
+def add_resource_booking(session: HTMLSession, token: str, id: int) -> None:
+    session.post(
+        "https://ibooking.sit.no/webapp/api/ResourceBooking/addBooking",
+        data={"token": token, "id": id},
+    ).raise_for_status()
+
+def book_resource(session: HTMLSession, start: datetime, activity_id: int, studio: int = None) -> bool:
+    """
+    Gløs studio id: 306
+    resource id 324: any resource of type Hall
+    Hall 4 activity id: 75606
+    id is the unique time and activity
+    """
+    token = get_token(session)
+    schedule = get_resource_schedule(session, studio, token)
+    for day in schedule["days"]:
+        if parse_datetime(day["date"]).date() == start.date():
+            for training_class in itertools.chain.from_iterable([row["classes"] for row in day["rows"]]):
+                if (
+                    training_class["activity"]["id"] == activity_id
+                    and parse_datetime(training_class["from"]) == training_start
+                ):
+                    booking_start = parse_datetime(day["bookingOpensAt"])
+                    if datetime.now() < booking_start:
+                        opens_in = booking_start - datetime.now()
+                        print(
+                            f"Booking opens in {str(opens_in).split('.')[0]}. Going to sleep ..."
+                        )
+                        sleep(opens_in.total_seconds())
+                    try:
+                        add_resource_booking(session, token, training_class["id"])
+                    except HTTPError as e:
+                        print(e.response)
+                    return True
+    return False
 
 
 def add_booking(session: HTMLSession, token: str, class_id: int) -> None:
@@ -93,6 +140,10 @@ if __name__ == "__main__":
         help="number of days until training slot (0 is today)",
     )
     parser.add_argument(
+        "--hall4",
+        type=bool,
+    )
+    parser.add_argument(
         "--studio",
         type=str,
         default="gløshaugen",
@@ -113,16 +164,20 @@ if __name__ == "__main__":
         session = HTMLSession()
         try:
             log_in(session, args.username, args.password)
-            success = book(session, training_start, STUDIOS[args.studio])
+            if args.hall4:
+                success = book_resource(session, training_start, ACTIVITIES["hall4"])
+                # success = book_resource(session, training_start, ACTIVITIES["hallAdragvoll"])
+            else:
+                success = book(session, training_start, STUDIOS[args.studio])
             print(
                 "Slot booked!"
                 if success
                 else "Could not find a training slot matching the provided parameters."
             )
             break
-        except Exception:
+        except Exception as e:
             if current_try == args.max_tries:
-                print("An error occurred.")
+                print("An error occurred.", e)
         finally:
             session.close()
             current_try += 1
